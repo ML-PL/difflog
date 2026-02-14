@@ -1,0 +1,21 @@
+(lang dune 3.0)
+
+(name difflog)
+(version 0.1.0)
+
+(generate_opam_files true)
+
+(source
+ (github difflog/difflog-ocaml))
+
+(authors "Difflog Team")
+(maintainers "Difflog Team")
+(license MIT)
+
+(package
+ (name difflog)
+ (synopsis "Differentiable Datalog for rule synthesis")
+ (description "OCaml reimplementation of Difflog: a differentiable Datalog framework for automatic synthesis of recursive Datalog programs from input-output examples.")
+ (depends
+  (ocaml (>= 4.14.0))
+  (dune  (>= 3.0))))

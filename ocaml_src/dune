@@ -1,0 +1,16 @@
+(executable
+ (name main)
+ ;(flags (:standard -w -39-33))
+ (public_name difflog)
+ (modules
+   base
+   lineage
+   value
+   token_vec
+   instance
+   evaluator
+   scorer
+   learner
+   problem
+   alps_parser
+   main))
