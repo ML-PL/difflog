@@ -41,6 +41,8 @@ let get_evaluator name : evaluator_fn =
   match name with
   | "NaiveEvaluator" -> NaiveEvaluator.eval
   | "SeminaiveEvaluator" -> SeminaiveEvaluator.eval
+  | "TrieEvaluator" -> Trie_evaluator.TrieEvaluator.eval
+  | "TrieSemiEvaluator" -> Trie_evaluator.TrieSemiEvaluator.eval
   | _ -> failwith (Printf.sprintf "Unknown evaluator: %s" name)
 
 (* ═══════════════════════════════════════════════════════════════════════ *)
@@ -168,6 +170,131 @@ let cmd_eval data_file template_file evaluator_name =
   ) problem.output_rels
 
 (* ═══════════════════════════════════════════════════════════════════════ *)
+(* JSON Helpers                                                            *)
+(* ═══════════════════════════════════════════════════════════════════════ *)
+
+let json_escape s =
+  let buf = Buffer.create (String.length s) in
+  String.iter (fun c ->
+    match c with
+    | '"' -> Buffer.add_string buf "\\\""
+    | '\\' -> Buffer.add_string buf "\\\\"
+    | '\n' -> Buffer.add_string buf "\\n"
+    | '\t' -> Buffer.add_string buf "\\t"
+    | c -> Buffer.add_char buf c
+  ) s;
+  Buffer.contents buf
+
+let json_string s = Printf.sprintf "\"%s\"" (json_escape s)
+let json_int n = string_of_int n
+let json_float f = Printf.sprintf "%.6f" f
+let json_bool b = if b then "true" else "false"
+
+let json_list items = "[" ^ String.concat ", " items ^ "]"
+let json_obj pairs =
+  let fields = List.map (fun (k, v) ->
+    Printf.sprintf "%s: %s" (json_string k) v
+  ) pairs in
+  "{" ^ String.concat ", " fields ^ "}"
+
+(* ═══════════════════════════════════════════════════════════════════════ *)
+(* Command: bench                                                          *)
+(* Like alps but outputs one JSON line to stdout with structured stats    *)
+(* ═══════════════════════════════════════════════════════════════════════ *)
+
+let cmd_bench data_file template_file learner_name evaluator_name scorer_name
+    tgt_loss max_iters =
+  let test_name =
+    Filename.chop_extension (Filename.basename data_file) in
+
+  let data_str = read_file data_file in
+  let template_str = read_file template_file in
+
+  Printf.eprintf "bench: %s / %s ...\n%!" test_name evaluator_name;
+  let problem = Alps_parser.parse data_str template_str in
+
+  let n_input = RelationSet.cardinal problem.input_rels in
+  let n_invented = RelationSet.cardinal problem.invented_rels in
+  let n_output = RelationSet.cardinal problem.output_rels in
+  let n_candidate_rules = List.length problem.rules in
+
+  let evaluator = get_evaluator evaluator_name in
+  let scorer = find_scorer scorer_name in
+  let learn = get_learner learner_name in
+
+  let edb_cfg = edb problem in
+  let idb_cfg = idb problem in
+
+  (* Sys.time() measures CPU time; close enough for single-threaded benchmarks *)
+  let time_start = Sys.time () in
+
+  let status = ref "ok" in
+  let result =
+    try
+      learn
+        ~evaluator
+        ~scorer
+        ~rules:problem.rules
+        ~output_rels:problem.output_rels
+        ~ref_idb:idb_cfg
+        ~discrete_idb:problem.discrete_idb
+        ~all_tokens:(all_tokens problem)
+        ~edb:edb_cfg
+        ~tgt_loss
+        ~max_iters
+    with e ->
+      status := Printf.sprintf "error: %s" (Printexc.to_string e);
+      { pos = problem.pos;
+        c_out = edb_cfg;
+        grad = Token_vec.zero (all_tokens problem);
+        loss = Float.infinity;
+        iterations = 0 }
+  in
+
+  let elapsed = Sys.time () -. time_start in
+
+  (* Count learned rules (non-zero weight) *)
+  let learned_rules = List.filter (fun rule ->
+    FValue.nonzero (eval_lineage rule.rule_lineage (Token_vec.apply result.pos))
+  ) problem.rules in
+  let n_learned = List.length learned_rules in
+
+  (* Sort learned rules by weight descending *)
+  let learned_sorted = List.sort (fun r1 r2 ->
+    let (fv1 : FValue.t) = eval_lineage r1.rule_lineage (Token_vec.apply result.pos) in
+    let (fv2 : FValue.t) = eval_lineage r2.rule_lineage (Token_vec.apply result.pos) in
+    compare fv2.v fv1.v
+  ) learned_rules in
+
+  let learned_rule_strs = List.map (fun rule ->
+    let (fv : FValue.t) = eval_lineage rule.rule_lineage (Token_vec.apply result.pos) in
+    json_obj [
+      ("weight", json_float fv.v);
+      ("rule", json_string (rule_to_string rule));
+    ]
+  ) learned_sorted in
+
+  let json = json_obj [
+    ("test", json_string test_name);
+    ("evaluator", json_string evaluator_name);
+    ("learner", json_string learner_name);
+    ("scorer", json_string scorer_name);
+    ("status", json_string !status);
+    ("input_rels", json_int n_input);
+    ("invented_rels", json_int n_invented);
+    ("output_rels", json_int n_output);
+    ("candidate_rules", json_int n_candidate_rules);
+    ("iterations", json_int result.iterations);
+    ("time_s", json_float elapsed);
+    ("loss", json_float result.loss);
+    ("target_loss", json_float tgt_loss);
+    ("converged", json_bool (result.loss < tgt_loss));
+    ("learned_rules_count", json_int n_learned);
+    ("learned_rules", json_list learned_rule_strs);
+  ] in
+  Printf.printf "%s\n%!" json
+
+(* ═══════════════════════════════════════════════════════════════════════ *)
 (* Usage Message                                                           *)
 (* ═══════════════════════════════════════════════════════════════════════ *)
 
@@ -182,11 +309,16 @@ Usage:
      Runs Difflog in the ALPS setting.
 
      Learners:    NewtonRootLearner | HybridAnnealingLearner
-     Evaluators:  NaiveEvaluator | SeminaiveEvaluator
+     Evaluators:  NaiveEvaluator | SeminaiveEvaluator | TrieEvaluator | TrieSemiEvaluator
      Scorers:     L2Scorer | L1Scorer | XEntropyScorer
 
   2. difflog eval <data.d> <templates.tp> <evaluator>
      Evaluates all rules with initial weights (no learning).
+
+  3. difflog bench <data.d> <templates.tp>
+              <learner> <evaluator> <scorer>
+              <tgtLoss> <maxIters>
+     Like alps but outputs a single JSON line to stdout with structured stats.
 
 Example:
   difflog alps path.d path.tp HybridAnnealingLearner SeminaiveEvaluator L2Scorer 0.01 1000
@@ -209,6 +341,10 @@ let () =
   (match argc with
    | 9 when args.(1) = "alps" ->
      cmd_alps args.(2) args.(3) args.(4) args.(5) args.(6)
+       (float_of_string args.(7)) (int_of_string args.(8))
+
+   | 9 when args.(1) = "bench" ->
+     cmd_bench args.(2) args.(3) args.(4) args.(5) args.(6)
        (float_of_string args.(7)) (int_of_string args.(8))
 
    | 5 when args.(1) = "eval" ->

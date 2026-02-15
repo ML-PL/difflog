@@ -30,6 +30,7 @@ type state = {
   c_out: fv_config;
   grad: Token_vec.t;
   loss: float;
+  iterations: int;
 }
 
 (* ─────────────────────────────────────────────────────────────────────── *)
@@ -43,7 +44,7 @@ let make_state ~(evaluator : eval_fn) ~(scorer : scorer)
   let c_out = evaluator rules (Token_vec.apply pos) repositioned in
   let grad = gradient_loss_total scorer pos c_out ref_idb output_rels in
   let loss = loss_total scorer c_out ref_idb output_rels in
-  { pos; c_out; grad; loss }
+  { pos; c_out; grad; loss; iterations = 0 }
 
 (* ─────────────────────────────────────────────────────────────────────── *)
 (* Random utilities                                                        *)
@@ -236,8 +237,9 @@ let newton_root_learn ~evaluator ~scorer ~rules ~output_rels ~ref_idb
   done;
 
   Printf.eprintf "#Iterations: %d.\n%!" !num_iters;
-  reinterpret ~evaluator ~scorer ~rules ~output_rels ~ref_idb
-    ~discrete_idb ~all_tokens !best
+  let final = reinterpret ~evaluator ~scorer ~rules ~output_rels ~ref_idb
+    ~discrete_idb ~all_tokens !best in
+  { final with iterations = !num_iters }
 
 (* ═══════════════════════════════════════════════════════════════════════ *)
 (* Hybrid Annealing Learner                                                *)
@@ -324,5 +326,6 @@ let hybrid_annealing_learn ~evaluator ~scorer ~rules ~output_rels ~ref_idb
   done;
 
   Printf.eprintf "#Iterations: %d.\n%!" !num_iters;
-  reinterpret ~evaluator ~scorer ~rules ~output_rels ~ref_idb
-    ~discrete_idb ~all_tokens !best
+  let final = reinterpret ~evaluator ~scorer ~rules ~output_rels ~ref_idb
+    ~discrete_idb ~all_tokens !best in
+  { final with iterations = !num_iters }

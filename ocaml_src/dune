@@ -9,6 +9,8 @@
    token_vec
    instance
    evaluator
+   rule_trie
+   trie_evaluator
    scorer
    learner
    problem
